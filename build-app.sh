@@ -1,7 +1,45 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SHERPA_ONNX_VERSION="v1.12.23"
+SHERPA_ONNX_SRC="$SCRIPT_DIR/sherpa-onnx"
+SHERPA_ONNX_LIBS="$SCRIPT_DIR/Typeasy/Libraries/sherpa-onnx"
+
 echo "🔨 Building Typeasy.app with GigaAM-v3 support..."
+
+# ── Step 0: Download & build sherpa-onnx if libraries are missing ──
+if [ ! -f "$SHERPA_ONNX_LIBS/libsherpa-onnx.a" ] || [ ! -f "$SHERPA_ONNX_LIBS/libonnxruntime.a" ]; then
+    echo ""
+    echo "📥 sherpa-onnx libraries not found. Building from source..."
+
+    # Clone if not present
+    if [ ! -d "$SHERPA_ONNX_SRC" ]; then
+        echo "   Cloning sherpa-onnx ${SHERPA_ONNX_VERSION}..."
+        git clone --depth 1 --branch "$SHERPA_ONNX_VERSION" \
+            https://github.com/k2-fsa/sherpa-onnx.git "$SHERPA_ONNX_SRC"
+    fi
+
+    # Build static libraries for macOS
+    echo "   Compiling sherpa-onnx (this may take a few minutes)..."
+    cd "$SHERPA_ONNX_SRC"
+    bash build-swift-macos.sh
+    cd "$SCRIPT_DIR"
+
+    BUILD_DIR="$SHERPA_ONNX_SRC/build-swift-macos"
+
+    # Copy built artifacts into Typeasy/Libraries/sherpa-onnx
+    mkdir -p "$SHERPA_ONNX_LIBS/include"
+    cp "$BUILD_DIR/install/lib/libsherpa-onnx.a" "$SHERPA_ONNX_LIBS/"
+    cp "$BUILD_DIR/install/lib/libonnxruntime.a" "$SHERPA_ONNX_LIBS/"
+    cp -R "$BUILD_DIR/install/include/"* "$SHERPA_ONNX_LIBS/include/"
+
+    echo "   ✅ sherpa-onnx libraries ready"
+else
+    echo "✅ sherpa-onnx libraries found"
+fi
+
+echo ""
 
 # Build release binary
 echo "📦 Compiling release build..."
