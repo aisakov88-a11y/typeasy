@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Typeasy</string>
+    <key>CFBundleDisplayName</key>
+    <string>Typeasy</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.typeasy.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>Typeasy</string>
+
+    <!-- Menu bar app (no dock icon) -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Minimum macOS version -->
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+
+    <!-- Privacy permissions -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Typeasy needs microphone access to record your voice for transcription.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Typeasy needs speech recognition to convert your voice to text.</string>
+
+    <!-- App category -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+
+    <!-- High resolution capable -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Supports Apple Silicon -->
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
+</dict>
+</plist>

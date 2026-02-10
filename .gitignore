@@ -1,0 +1,32 @@
+# Build artifacts
+build/
+.build/
+dist/
+Typeasy.app/
+*.app
+
+# Swift Package Manager
+.swiftpm/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# C/C++ libraries (vendored, large)
+sherpa-onnx/
+
+# Media & transcription artifacts
+*.webm
+*.wav
+*.mp3
+*.mp4
+*.m4a
+analytics.txt
+transcribe_gigaam.py
+
+# macOS
+.DS_Store
+*.swp
+*~
