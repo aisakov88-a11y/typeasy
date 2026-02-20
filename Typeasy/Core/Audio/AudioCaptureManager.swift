@@ -1,56 +1,52 @@
 import AVFoundation
 import Accelerate
 
-/// Manages audio capture from the microphone
+/// Manages audio capture from the microphone.
+///
+/// @MainActor isolation guarantees that all AVAudioEngine operations
+/// (installTap, removeTap, start, stop) run on the main thread, eliminating
+/// the threading races that caused NSInternalInconsistencyException crashes.
+@MainActor
 final class AudioCaptureManager {
     // MARK: - Properties
 
-    private var audioEngine = AVAudioEngine()
-    private var audioSamples: [Float] = []
-    private let sampleRate: Double = 16000 // WhisperKit requirement
+    private let audioEngine = AVAudioEngine()
+    private let sampleRate: Double = 16000
     private var isCapturing = false
 
-    private let lock = NSLock() // For audio samples array
-    private let captureLock = NSLock() // For capture state management
+    // Written from the audio thread (tap callback), read from main thread.
+    // Protected by samplesLock; marked nonisolated(unsafe) so the
+    // nonisolated processAudioBuffer can access it directly.
+    private nonisolated let samplesLock = NSLock()
+    private nonisolated(unsafe) var audioSamples: [Float] = []
 
     // MARK: - Public Methods
 
-    /// Start capturing audio from the microphone
+    /// Start capturing audio from the microphone.
     func startCapture() async throws {
-        // Permission check MUST happen before locking — this is the only async
-        // point in this function; NSLock must not be held across await.
-        let permission = await requestMicrophonePermission()
-        guard permission else {
-            throw PipelineError.microphonePermissionDenied
-        }
-
-        // Hold captureLock for the ENTIRE audio-engine setup (no await below).
-        //
-        // Race we're fixing: startCapture() runs on a thread-pool thread after
-        // the await, while stopCapture() runs on the main thread. Without the
-        // lock covering installTap, stopCapture() can run between
-        // "isCapturing = true" and "installTap", leaving isCapturing=false but
-        // a tap still installed. The next startCapture() then tries to install
-        // a second tap → NSInternalInconsistencyException crash.
-        captureLock.lock()
-        defer { captureLock.unlock() }
-
         guard !isCapturing else {
             NSLog("⚠️ AudioCaptureManager: Already capturing, ignoring duplicate call")
             return
         }
+        // Set BEFORE the permission await so any concurrent stopCapture()
+        // (which can run on main actor during the suspension) sees it.
         isCapturing = true
 
-        // Recreate the engine on every session — this guarantees a clean slate
-        // with no stale tap, regardless of how the previous session ended.
-        // removeTap alone is not sufficient when AVAudioEngine retains internal
-        // tap state after an unexpected stop.
-        audioEngine = AVAudioEngine()
+        let permission = await requestMicrophonePermission()
+        guard permission else {
+            isCapturing = false
+            throw PipelineError.microphonePermissionDenied
+        }
+
+        // Back on main actor — safe to configure AVAudioEngine.
         let inputNode = audioEngine.inputNode
 
-        lock.lock()
+        // Always remove any lingering tap before installing a new one.
+        inputNode.removeTap(onBus: 0)
+
+        samplesLock.lock()
         audioSamples.removeAll()
-        lock.unlock()
+        samplesLock.unlock()
 
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
@@ -73,6 +69,9 @@ final class AudioCaptureManager {
             self?.processAudioBuffer(buffer, converter: converter, outputFormat: whisperFormat)
         }
 
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
         audioEngine.prepare()
 
         do {
@@ -86,25 +85,21 @@ final class AudioCaptureManager {
         }
     }
 
-    /// Stop capturing and return collected audio samples
+    /// Stop capturing and return collected audio samples.
     func stopCapture() -> [Float] {
-        captureLock.lock()
-        defer { captureLock.unlock() }
-
         guard isCapturing else {
             NSLog("⚠️ stopCapture called but not capturing")
             return []
         }
 
-        // Remove tap first, then stop engine
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         isCapturing = false
 
-        lock.lock()
+        samplesLock.lock()
         let samples = audioSamples
         audioSamples.removeAll()
-        lock.unlock()
+        samplesLock.unlock()
 
         NSLog("✅ Audio capture stopped, collected \(samples.count) samples")
         return samples
@@ -120,12 +115,13 @@ final class AudioCaptureManager {
         }
     }
 
-    private func processAudioBuffer(
+    /// Called from the AVAudioEngine tap — runs on a private audio thread.
+    /// nonisolated so it can be called without hopping to the main actor.
+    private nonisolated func processAudioBuffer(
         _ buffer: AVAudioPCMBuffer,
         converter: AVAudioConverter,
         outputFormat: AVAudioFormat
     ) {
-        // Calculate output frame count based on sample rate ratio
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
         let outputFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
 
@@ -150,8 +146,8 @@ final class AudioCaptureManager {
             count: Int(outputBuffer.frameLength)
         ))
 
-        lock.lock()
+        samplesLock.lock()
         audioSamples.append(contentsOf: samples)
-        lock.unlock()
+        samplesLock.unlock()
     }
 }
