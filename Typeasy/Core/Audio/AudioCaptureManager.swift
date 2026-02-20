@@ -17,37 +17,35 @@ final class AudioCaptureManager {
 
     /// Start capturing audio from the microphone
     func startCapture() async throws {
-        // Permission check MUST happen before locking — await suspends the task
-        // and NSLock requires unlock on the same OS thread that called lock(),
-        // so holding it across an await causes SIGABRT when the task resumes
-        // on a different thread.
+        // Permission check MUST happen before locking — this is the only async
+        // point in this function; NSLock must not be held across await.
         let permission = await requestMicrophonePermission()
         guard permission else {
             throw PipelineError.microphonePermissionDenied
         }
 
-        // Guard + state update in a short synchronous critical section (no await inside)
+        // Hold captureLock for the ENTIRE audio-engine setup (no await below).
+        //
+        // Race we're fixing: startCapture() runs on a thread-pool thread after
+        // the await, while stopCapture() runs on the main thread. Without the
+        // lock covering installTap, stopCapture() can run between
+        // "isCapturing = true" and "installTap", leaving isCapturing=false but
+        // a tap still installed. The next startCapture() then tries to install
+        // a second tap → NSInternalInconsistencyException crash.
         captureLock.lock()
+        defer { captureLock.unlock() }
+
         guard !isCapturing else {
-            captureLock.unlock()
             NSLog("⚠️ AudioCaptureManager: Already capturing, ignoring duplicate call")
             return
         }
         isCapturing = true
-        captureLock.unlock()
 
-        // Ensure flag is reset on early exit
-        var engineStarted = false
-        defer {
-            if !engineStarted { isCapturing = false }
-        }
-
-        // Safety: stop engine and remove any existing tap before installing new one
         let inputNode = audioEngine.inputNode
         if audioEngine.isRunning {
             audioEngine.stop()
         }
-        inputNode.removeTap(onBus: 0) // Safe to call even if no tap exists
+        inputNode.removeTap(onBus: 0)
 
         lock.lock()
         audioSamples.removeAll()
@@ -55,43 +53,34 @@ final class AudioCaptureManager {
 
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
-        // Create format for WhisperKit (16kHz mono Float32)
         guard let whisperFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
             channels: 1,
             interleaved: false
         ) else {
+            isCapturing = false
             throw PipelineError.audioCaptureFailed("Failed to create audio format")
         }
 
-        // Create converter for resampling
         guard let converter = AVAudioConverter(from: inputFormat, to: whisperFormat) else {
+            isCapturing = false
             throw PipelineError.audioCaptureFailed("Failed to create audio converter")
         }
 
-        // Install tap with error handling
-        do {
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-                self?.processAudioBuffer(buffer, converter: converter, outputFormat: whisperFormat)
-            }
-        } catch {
-            // If tap installation fails, log and rethrow
-            NSLog("❌ Failed to install tap: \(error)")
-            isCapturing = false
-            throw PipelineError.audioCaptureFailed("Failed to install audio tap: \(error.localizedDescription)")
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+            self?.processAudioBuffer(buffer, converter: converter, outputFormat: whisperFormat)
         }
 
         audioEngine.prepare()
 
         do {
             try audioEngine.start()
-            engineStarted = true
             NSLog("✅ Audio engine started successfully")
         } catch {
-            // If start fails, cleanup and rethrow
             NSLog("❌ Failed to start audio engine: \(error)")
             inputNode.removeTap(onBus: 0)
+            isCapturing = false
             throw PipelineError.audioCaptureFailed("Failed to start audio engine: \(error.localizedDescription)")
         }
     }
