@@ -5,7 +5,7 @@ import Accelerate
 final class AudioCaptureManager {
     // MARK: - Properties
 
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine = AVAudioEngine()
     private var audioSamples: [Float] = []
     private let sampleRate: Double = 16000 // WhisperKit requirement
     private var isCapturing = false
@@ -41,11 +41,12 @@ final class AudioCaptureManager {
         }
         isCapturing = true
 
+        // Recreate the engine on every session — this guarantees a clean slate
+        // with no stale tap, regardless of how the previous session ended.
+        // removeTap alone is not sufficient when AVAudioEngine retains internal
+        // tap state after an unexpected stop.
+        audioEngine = AVAudioEngine()
         let inputNode = audioEngine.inputNode
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        inputNode.removeTap(onBus: 0)
 
         lock.lock()
         audioSamples.removeAll()
