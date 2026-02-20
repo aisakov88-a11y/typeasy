@@ -262,68 +262,54 @@ final class GigaAMTranscriptionService: ObservableObject, TranscriptionServicePr
             return TranscriptionResultData(text: "", language: "ru", segments: [])
         }
 
-        NSLog("🎤 Starting GigaAM transcription with \(audioSamples.count) samples")
+        // Process in 30-second chunks to avoid crashes on long recordings
+        let chunkSize = 30 * 16000  // 30 seconds at 16kHz
+        let totalChunks = (audioSamples.count + chunkSize - 1) / chunkSize
+        NSLog("🎤 Starting GigaAM transcription: \(audioSamples.count) samples, \(totalChunks) chunk(s)")
 
         // Run transcription on background thread to avoid blocking main thread
         return try await Task.detached {
-            // Create offline stream
-            guard let stream = SherpaOnnxCreateOfflineStream(recognizer) else {
-                NSLog("❌ Failed to create offline stream")
-                throw PipelineError.transcriptionFailed("Failed to create stream")
-            }
-            defer {
-                // Always cleanup stream
+            var texts: [String] = []
+
+            for i in 0..<totalChunks {
+                let start = i * chunkSize
+                let end = min(start + chunkSize, audioSamples.count)
+                let chunk = Array(audioSamples[start..<end])
+
+                NSLog("🔍 Processing chunk \(i + 1)/\(totalChunks)...")
+
+                guard let stream = SherpaOnnxCreateOfflineStream(recognizer) else {
+                    NSLog("❌ Failed to create offline stream for chunk \(i + 1)")
+                    throw PipelineError.transcriptionFailed("Failed to create stream")
+                }
+
+                chunk.withUnsafeBufferPointer { buffer in
+                    guard let baseAddress = buffer.baseAddress else { return }
+                    SherpaOnnxAcceptWaveformOffline(stream, 16000, baseAddress, Int32(buffer.count))
+                }
+
+                SherpaOnnxDecodeOfflineStream(recognizer, stream)
+
+                if let result = SherpaOnnxGetOfflineStreamResult(stream) {
+                    if let textPtr = result.pointee.text {
+                        let text = String(cString: textPtr).trimmingCharacters(in: .whitespaces)
+                        if !text.isEmpty {
+                            texts.append(text)
+                        }
+                    }
+                    SherpaOnnxDestroyOfflineRecognizerResult(result)
+                }
+
                 SherpaOnnxDestroyOfflineStream(stream)
             }
 
-            // Feed audio samples to stream
-            // Note: sherpa-onnx expects samples in range [-1, 1]
-            audioSamples.withUnsafeBufferPointer { buffer in
-                guard let baseAddress = buffer.baseAddress else { return }
-                SherpaOnnxAcceptWaveformOffline(
-                    stream,
-                    16000,  // Sample rate (must match feat_config)
-                    baseAddress,
-                    Int32(buffer.count)
-                )
-            }
-
-            // Run decoding
-            NSLog("🔍 Decoding audio with GigaAM-v3...")
-            SherpaOnnxDecodeOfflineStream(recognizer, stream)
-
-            // Get result
-            guard let result = SherpaOnnxGetOfflineStreamResult(stream) else {
-                NSLog("❌ Failed to get transcription result")
-                throw PipelineError.transcriptionFailed("Failed to get result")
-            }
-            defer {
-                // Cleanup result
-                SherpaOnnxDestroyOfflineRecognizerResult(result)
-            }
-
-            // Extract text from result
-            let text: String
-            if let textPtr = result.pointee.text {
-                text = String(cString: textPtr)
-            } else {
-                text = ""
-            }
-
-            NSLog("✅ GigaAM transcription completed: '\(text)'")
-
-            // Extract timestamps if available
-            let segments: [TranscriptionSegmentData] = []
-            if result.pointee.timestamps != nil && result.pointee.count > 0 {
-                // GigaAM provides timestamps per token
-                // For now, we skip segment extraction as it requires token-level processing
-                NSLog("📊 Timestamps available: \(result.pointee.count) tokens")
-            }
+            let fullText = texts.joined(separator: " ")
+            NSLog("✅ GigaAM transcription completed (\(totalChunks) chunks): '\(fullText)'")
 
             return TranscriptionResultData(
-                text: text,
-                language: "ru",  // GigaAM only supports Russian
-                segments: segments
+                text: fullText,
+                language: "ru",
+                segments: []
             )
         }.value
     }
